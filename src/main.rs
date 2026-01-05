@@ -1,12 +1,12 @@
 mod config;
 mod proxmox;
+mod server;
 
-use axum::{routing::get, Router};
 use tracing::info;
 
 use crate::config::Config;
-
-const INDEX_HTML: &str = include_str!("../templates/index.html");
+use crate::proxmox::ProxmoxClient;
+use crate::server::{router, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -19,7 +19,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         err
     })?;
 
-    let app = Router::new().route("/", get(index));
+    let client = ProxmoxClient::new(
+        config.pve_host,
+        &config.pve_token_id,
+        &config.pve_token_secret,
+        config.pve_insecure_ssl,
+    )?;
+
+    let app = router(AppState::new(client));
 
     let addr = std::net::SocketAddr::from((config.bind, config.port));
     info!("Starting server on {addr}");
@@ -28,8 +35,4 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     axum::serve(listener, app).await?;
 
     Ok(())
-}
-
-async fn index() -> axum::response::Html<&'static str> {
-    axum::response::Html(INDEX_HTML)
 }
