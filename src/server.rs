@@ -40,12 +40,15 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/assets/app.js", get(app_js))
-        .route("/assets/background.jpg", get(|| async {
-            (
-                [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
-                BACKGROUND_JPG,
-            )
-        }))
+        .route(
+            "/assets/background.jpg",
+            get(|| async {
+                (
+                    [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                    BACKGROUND_JPG,
+                )
+            }),
+        )
         .route("/api/vms", get(list_vms))
         .route("/api/launch", post(launch))
         .with_state(Arc::new(state))
@@ -294,9 +297,7 @@ impl LaunchManager {
             state.requested_action = action;
         }
 
-        let outcome = self
-            .run_flow(client, target_vmid, running_vm, action)
-            .await;
+        let outcome = self.run_flow(client, target_vmid, running_vm, action).await;
 
         let mut state = self.state.lock().await;
         state.in_progress = false;
@@ -320,7 +321,8 @@ impl LaunchManager {
                 running.vmid, target_vmid
             );
 
-            self.execute_action(client, running.vmid, current_action).await?;
+            self.execute_action(client, running.vmid, current_action)
+                .await?;
 
             loop {
                 let status = client.vm_status(running.vmid).await?;
