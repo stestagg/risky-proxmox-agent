@@ -17,3 +17,8 @@ Clicking a VM causes this sequence to happen (apart from the initial confirmatio
 
 Only one launch action can be running at any time.  If a users selects 'Shutdown gracefully', but then repeats the request with 'Terminate', then the Terminate should be applied to the current VM, and the existing process continue, otherwise an error should be returned/displayed, indicating that a VM launch is currently happening.
 
+# Code Structure
+A top-level binary crate that runs the webserver using .env files for pve values, and command line arguments (clap?) for bind address/port.
+HTML/JS files are embedded in the binary (using askama?) 
+An example systemd unit for running the service on startup on a proxmox server
+INSTALLING and RUNNING markdown files showing how to install/run the service.
