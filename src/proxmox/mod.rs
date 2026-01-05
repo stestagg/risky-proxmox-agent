@@ -32,9 +32,7 @@ impl ProxmoxClient {
     }
 
     pub async fn list_vms(&self) -> Result<Vec<VmInfo>, ProxmoxError> {
-        let resources: Vec<ResourceVm> = self
-            .get("/cluster/resources?type=vm")
-            .await?;
+        let resources: Vec<ResourceVm> = self.get("/cluster/resources?type=vm").await?;
 
         Ok(resources
             .into_iter()
@@ -123,18 +121,12 @@ impl ProxmoxClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            Err(ProxmoxError::Api(format!(
-                "status {status}, body {body}"
-            )))
+            Err(ProxmoxError::Api(format!("status {status}, body {body}")))
         }
     }
 
     fn endpoint(&self, path: &str) -> String {
-        format!(
-            "{}/api2/json{}",
-            self.base_url.trim_end_matches('/'),
-            path
-        )
+        format!("{}/api2/json{}", self.base_url.trim_end_matches('/'), path)
     }
 }
 

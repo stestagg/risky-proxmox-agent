@@ -21,6 +21,7 @@ pub struct Config {
     pub pve_token_id: String,
     pub pve_token_secret: String,
     pub pve_insecure_ssl: bool,
+    pub pve_fallback_vm: Option<String>,
 }
 
 impl Config {
@@ -32,6 +33,7 @@ impl Config {
         let pve_token_id = read_env("PVE_TOKEN_ID")?;
         let pve_token_secret = read_env("PVE_TOKEN_SECRET")?;
         let pve_insecure_ssl = read_env_bool("PVE_INSECURE_SSL").unwrap_or(false);
+        let pve_fallback_vm = read_env_optional("PVE_FALLBACK_VM");
 
         Ok(Self {
             bind: args.bind,
@@ -40,6 +42,7 @@ impl Config {
             pve_token_id,
             pve_token_secret,
             pve_insecure_ssl,
+            pve_fallback_vm,
         })
     }
 }
@@ -56,4 +59,11 @@ fn read_env_bool(key: &str) -> Option<bool> {
             "0" | "false" | "no" | "off" => Some(false),
             _ => None,
         })
+}
+
+fn read_env_optional(key: &str) -> Option<String> {
+    std::env::var(key)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }

@@ -1,6 +1,7 @@
 use tracing::info;
 
 use risky_proxmox_agent::config::Config;
+use risky_proxmox_agent::fallback::spawn_fallback_task;
 use risky_proxmox_agent::proxmox::ProxmoxClient;
 use risky_proxmox_agent::server::{router, AppState};
 
@@ -21,6 +22,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &config.pve_token_secret,
         config.pve_insecure_ssl,
     )?;
+
+    if let Some(fallback_name) = config.pve_fallback_vm.clone() {
+        spawn_fallback_task(client.clone(), fallback_name);
+    }
 
     let app = router(AppState::new(client));
 
