@@ -1,4 +1,5 @@
 mod config;
+mod proxmox;
 
 use axum::{routing::get, Router};
 use tracing::info;
