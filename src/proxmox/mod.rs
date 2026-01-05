@@ -1,8 +1,10 @@
 pub mod error;
 pub mod types;
 
+use std::time::{SystemTime, UNIX_EPOCH};
+
 use serde::de::DeserializeOwned;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::proxmox::error::ProxmoxError;
 use crate::proxmox::types::{parse_tags, VmInfo, VmStatus};
@@ -73,6 +75,20 @@ impl ProxmoxClient {
         self.post_status(vmid, "stop").await
     }
 
+    pub async fn fork_vm(&self, vmid: u64, name: &str) -> Result<u64, ProxmoxError> {
+        let snapshot = format!(
+            "fork-{}",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs()
+        );
+        let newid = self.next_vmid().await?;
+        self.create_snapshot(vmid, &snapshot).await?;
+        self.clone_vm(vmid, newid, name, &snapshot).await?;
+        Ok(newid)
+    }
+
     async fn node_for_vmid(&self, vmid: u64) -> Result<String, ProxmoxError> {
         let resources: Vec<ResourceVm> = self.get("/cluster/resources?type=vm").await?;
         resources
@@ -86,6 +102,40 @@ impl ProxmoxClient {
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/status/{action}");
         self.post(&path).await
+    }
+
+    async fn next_vmid(&self) -> Result<u64, ProxmoxError> {
+        let nextid: String = self.get("/cluster/nextid").await?;
+        nextid
+            .parse()
+            .map_err(|err| ProxmoxError::Api(format!("Invalid next VMID: {err}")))
+    }
+
+    async fn create_snapshot(&self, vmid: u64, snapshot: &str) -> Result<(), ProxmoxError> {
+        let node = self.node_for_vmid(vmid).await?;
+        let path = format!("/nodes/{node}/qemu/{vmid}/snapshot");
+        let body = SnapshotRequest {
+            snapname: snapshot,
+        };
+        self.post_form(&path, &body).await
+    }
+
+    async fn clone_vm(
+        &self,
+        vmid: u64,
+        newid: u64,
+        name: &str,
+        snapshot: &str,
+    ) -> Result<(), ProxmoxError> {
+        let node = self.node_for_vmid(vmid).await?;
+        let path = format!("/nodes/{node}/qemu/{vmid}/clone");
+        let body = CloneRequest {
+            newid,
+            name,
+            full: 1,
+            snapname: snapshot,
+        };
+        self.post_form(&path, &body).await
     }
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ProxmoxError> {
@@ -107,6 +157,19 @@ impl ProxmoxClient {
             .client
             .post(url)
             .header(reqwest::header::AUTHORIZATION, self.token.clone())
+            .send()
+            .await?;
+        let _ = Self::ensure_success(response).await?;
+        Ok(())
+    }
+
+    async fn post_form<T: Serialize>(&self, path: &str, body: &T) -> Result<(), ProxmoxError> {
+        let url = self.endpoint(path);
+        let response = self
+            .client
+            .post(url)
+            .header(reqwest::header::AUTHORIZATION, self.token.clone())
+            .form(body)
             .send()
             .await?;
         let _ = Self::ensure_success(response).await?;
@@ -148,4 +211,17 @@ struct ResourceVm {
 #[derive(Debug, Deserialize)]
 struct StatusResponse {
     status: String,
+}
+
+#[derive(Debug, Serialize)]
+struct SnapshotRequest<'a> {
+    snapname: &'a str,
+}
+
+#[derive(Debug, Serialize)]
+struct CloneRequest<'a> {
+    newid: u64,
+    name: &'a str,
+    full: u8,
+    snapname: &'a str,
 }

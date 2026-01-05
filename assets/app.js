@@ -5,6 +5,11 @@ const actionDialog = document.getElementById("action-dialog");
 const actionDialogTitle = document.getElementById("action-dialog-title");
 const actionDialogButtons = document.getElementById("action-dialog-buttons");
 const actionDialogCancel = document.getElementById("action-dialog-cancel");
+const forkDialog = document.getElementById("fork-dialog");
+const forkDialogForm = document.getElementById("fork-dialog-form");
+const forkDialogTitle = document.getElementById("fork-dialog-title");
+const forkNameInput = document.getElementById("fork-name-input");
+const forkDialogCancel = document.getElementById("fork-dialog-cancel");
 
 const statusClasses = {
   running: "status-running",
@@ -58,12 +63,24 @@ function renderVms(vms) {
     if (vm.notes) {
       card.appendChild(notes);
     }
+
+    const actions = document.createElement("div");
+    actions.className = "actions";
+
     if (vm.status !== "running") {
-      const button = document.createElement("button");
-      button.textContent = "Launch";
-      button.addEventListener("click", () => launchVm(vm.vmid));
-      card.appendChild(button);
+      const launchButton = document.createElement("button");
+      launchButton.textContent = "Launch";
+      launchButton.addEventListener("click", () => launchVm(vm.vmid));
+      actions.appendChild(launchButton);
     }
+
+    const forkButton = document.createElement("button");
+    forkButton.className = "secondary";
+    forkButton.textContent = "Fork";
+    forkButton.addEventListener("click", () => forkVm(vm));
+    actions.appendChild(forkButton);
+
+    card.appendChild(actions);
 
     gridEl.appendChild(card);
   });
@@ -132,6 +149,35 @@ async function launchVm(vmid, action) {
   }
 }
 
+async function forkVm(vm) {
+  const forkName = await promptForForkName(vm);
+  if (!forkName) {
+    setStatus("Fork cancelled.");
+    return;
+  }
+
+  setStatus("Creating fork…");
+  try {
+    const response = await fetch("/api/fork", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ vmid: vm.vmid, name: forkName }),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || `Fork failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    setStatus(result.message || "Fork created.");
+    await loadVms();
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  }
+}
+
 refreshButton.addEventListener("click", () => loadVms());
 
 loadVms();
@@ -157,5 +203,40 @@ function promptForAction(runningName, actions) {
 
     actionDialogCancel.onclick = () => actionDialog.close("");
     actionDialog.showModal();
+  });
+}
+
+function promptForForkName(vm) {
+  return new Promise((resolve) => {
+    const baseName = vm.name || `vm-${vm.vmid}`;
+    forkDialogTitle.textContent = `Fork ${baseName} (#${vm.vmid})`;
+    forkNameInput.value = `${baseName}-fork`;
+
+    const handleClose = () => {
+      const value = forkDialog.returnValue || "";
+      resolve(value.trim() || null);
+    };
+
+    forkDialog.addEventListener("close", handleClose, { once: true });
+
+    forkDialogCancel.onclick = () => forkDialog.close("");
+
+    forkDialogForm.addEventListener(
+      "submit",
+      (event) => {
+        event.preventDefault();
+        const value = forkNameInput.value.trim();
+        if (!value) {
+          forkNameInput.focus();
+          return;
+        }
+        forkDialog.close(value);
+      },
+      { once: true }
+    );
+
+    forkDialog.showModal();
+    forkNameInput.focus();
+    forkNameInput.select();
   });
 }

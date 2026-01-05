@@ -120,6 +120,12 @@
         font-weight: 600;
       }
 
+      button.secondary {
+        background: #1f2937;
+        color: #e2e8f0;
+        border: 1px solid #334155;
+      }
+
       button:disabled {
         background: #334155;
         cursor: not-allowed;
@@ -129,6 +135,12 @@
         font-size: 0.85rem;
         color: #cbd5f5;
         white-space: pre-line;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
       }
 
       dialog {
@@ -166,6 +178,33 @@
         width: 100%;
         background: #334155;
       }
+
+      .dialog-field {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        margin-bottom: 16px;
+      }
+
+      .dialog-field label {
+        font-size: 0.85rem;
+        color: #cbd5f5;
+      }
+
+      .dialog-field input {
+        background: #0f141e;
+        border: 1px solid #2d3443;
+        border-radius: 8px;
+        padding: 10px 12px;
+        color: #f8fafc;
+        font-size: 0.95rem;
+      }
+
+      .dialog-help {
+        font-size: 0.8rem;
+        color: #94a3b8;
+        margin: 0 0 16px;
+      }
     </style>
   </head>
   <body>
@@ -183,6 +222,31 @@
       <button class="dialog-cancel" id="action-dialog-cancel" type="button">
         Cancel
       </button>
+    </dialog>
+    <dialog id="fork-dialog">
+      <form id="fork-dialog-form" method="dialog">
+        <p class="dialog-title" id="fork-dialog-title">Fork VM</p>
+        <div class="dialog-field">
+          <label for="fork-name-input">Fork name</label>
+          <input
+            id="fork-name-input"
+            name="fork-name"
+            type="text"
+            autocomplete="off"
+            required
+            maxlength="64"
+          />
+        </div>
+        <p class="dialog-help">
+          Creates a full clone with the current disk snapshot and VM settings.
+        </p>
+        <div class="dialog-actions">
+          <button type="submit">Create fork</button>
+          <button class="secondary" id="fork-dialog-cancel" type="button">
+            Cancel
+          </button>
+        </div>
+      </form>
     </dialog>
     <script src="/assets/app.js"></script>
   </body>
