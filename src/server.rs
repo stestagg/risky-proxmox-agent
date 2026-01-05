@@ -19,6 +19,7 @@ use crate::proxmox::ProxmoxClient;
 
 const INDEX_HTML: &str = include_str!("../assets/index.html");
 const APP_JS: &str = include_str!("../assets/app.js");
+const BACKGROUND_JPG: &[u8] = include_bytes!("../assets/background.jpg");
 
 #[derive(Clone)]
 pub struct AppState {
@@ -39,6 +40,12 @@ pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/", get(index))
         .route("/assets/app.js", get(app_js))
+        .route("/assets/background.jpg", get(|| async {
+            (
+                [(axum::http::header::CONTENT_TYPE, "image/jpeg")],
+                BACKGROUND_JPG,
+            )
+        }))
         .route("/api/vms", get(list_vms))
         .route("/api/launch", post(launch))
         .with_state(Arc::new(state))
