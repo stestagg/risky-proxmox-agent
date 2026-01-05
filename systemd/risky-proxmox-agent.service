@@ -1,0 +1,15 @@
+[Unit]
+Description=Risky Proxmox Agent
+After=network.target
+
+[Service]
+Type=simple
+User=replace-with-user
+Group=replace-with-group
+EnvironmentFile=/etc/risky-proxmox-agent.env
+ExecStart=/usr/local/bin/risky-proxmox-agent --bind 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
