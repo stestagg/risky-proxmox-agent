@@ -14,7 +14,20 @@
 
       body {
         margin: 0;
+        min-height: 100vh;
         padding: 24px;
+        background: url("/assets/background.png") center / cover no-repeat fixed,
+          #0f1115;
+        display: flex;
+        justify-content: center;
+      }
+
+      .layout {
+        width: min(1200px, 100%);
+        min-height: calc(100vh - 48px);
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
       }
 
       header {
@@ -35,7 +48,11 @@
       .grid {
         display: grid;
         gap: 16px;
-        grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        max-width: calc((4 * 240px) + (3 * 16px));
+        width: 100%;
+        margin: 0 auto;
+        justify-content: center;
       }
 
       .vm-card {
@@ -111,15 +128,60 @@
         color: #cbd5f5;
         white-space: pre-line;
       }
+
+      dialog {
+        border: 1px solid #2d3443;
+        border-radius: 12px;
+        padding: 20px;
+        background: #121723;
+        color: #f8fafc;
+        width: min(420px, 90vw);
+        box-shadow: 0 24px 60px rgba(8, 11, 20, 0.65);
+      }
+
+      dialog::backdrop {
+        background: rgba(6, 8, 15, 0.75);
+      }
+
+      .dialog-title {
+        font-size: 1rem;
+        font-weight: 600;
+        margin: 0 0 16px;
+      }
+
+      .dialog-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .dialog-actions button {
+        flex: 1 1 140px;
+      }
+
+      .dialog-cancel {
+        margin-top: 16px;
+        width: 100%;
+        background: #334155;
+      }
     </style>
   </head>
   <body>
-    <header>
-      <h1>Risky Proxmox Agent</h1>
-      <button id="refresh">Refresh</button>
-    </header>
-    <div class="status-bar" id="status">Loading VM inventory…</div>
-    <section class="grid" id="vm-grid"></section>
+    <div class="layout">
+      <header>
+        <h1>Risky Proxmox Agent</h1>
+        <button id="refresh">Refresh</button>
+      </header>
+      <div class="status-bar" id="status">Loading VM inventory…</div>
+      <section class="grid" id="vm-grid"></section>
+    </div>
+    <dialog id="action-dialog">
+      <p class="dialog-title" id="action-dialog-title"></p>
+      <div class="dialog-actions" id="action-dialog-buttons"></div>
+      <button class="dialog-cancel" id="action-dialog-cancel" type="button">
+        Cancel
+      </button>
+    </dialog>
     <script src="/assets/app.js"></script>
   </body>
 </html>

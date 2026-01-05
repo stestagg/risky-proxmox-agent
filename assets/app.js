@@ -1,6 +1,10 @@
 const statusEl = document.getElementById("status");
 const gridEl = document.getElementById("vm-grid");
 const refreshButton = document.getElementById("refresh");
+const actionDialog = document.getElementById("action-dialog");
+const actionDialogTitle = document.getElementById("action-dialog-title");
+const actionDialogButtons = document.getElementById("action-dialog-buttons");
+const actionDialogCancel = document.getElementById("action-dialog-cancel");
 
 const statusClasses = {
   running: "status-running",
@@ -49,16 +53,17 @@ function renderVms(vms) {
     notes.className = "notes";
     notes.textContent = vm.notes || "";
 
-    const button = document.createElement("button");
-    button.textContent = "Launch";
-    button.addEventListener("click", () => launchVm(vm.vmid));
-
     card.appendChild(header);
     card.appendChild(tags);
     if (vm.notes) {
       card.appendChild(notes);
     }
-    card.appendChild(button);
+    if (vm.status !== "running") {
+      const button = document.createElement("button");
+      button.textContent = "Launch";
+      button.addEventListener("click", () => launchVm(vm.vmid));
+      card.appendChild(button);
+    }
 
     gridEl.appendChild(card);
   });
@@ -104,8 +109,9 @@ async function launchVm(vmid, action) {
 
     if (result.status === "needs_action") {
       const runningName = result.running_vm?.name || "Current VM";
-      const actionChoice = prompt(
-        `${runningName} is running. Choose action: ${result.allowed_actions.join(", ")}`
+      const actionChoice = await promptForAction(
+        runningName,
+        result.allowed_actions
       );
       if (!actionChoice) {
         setStatus("Launch cancelled.");
@@ -129,3 +135,27 @@ async function launchVm(vmid, action) {
 refreshButton.addEventListener("click", () => loadVms());
 
 loadVms();
+
+function promptForAction(runningName, actions) {
+  return new Promise((resolve) => {
+    actionDialogTitle.textContent = `${runningName} is running. Choose action:`;
+    actionDialogButtons.innerHTML = "";
+
+    const handleClose = () => {
+      resolve(actionDialog.returnValue || null);
+    };
+
+    actionDialog.addEventListener("close", handleClose, { once: true });
+
+    actions.forEach((action) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.textContent = action;
+      button.addEventListener("click", () => actionDialog.close(action));
+      actionDialogButtons.appendChild(button);
+    });
+
+    actionDialogCancel.onclick = () => actionDialog.close("");
+    actionDialog.showModal();
+  });
+}
