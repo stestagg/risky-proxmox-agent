@@ -51,6 +51,7 @@ pub fn router(state: AppState) -> Router {
         )
         .route("/api/vms", get(list_vms))
         .route("/api/launch", post(launch))
+        .route("/api/fork", post(fork_vm))
         .with_state(Arc::new(state))
 }
 
@@ -83,6 +84,21 @@ async fn launch(
         .await
         .map_err(map_launch_error)?;
     Ok(Json(response))
+}
+
+async fn fork_vm(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ForkRequest>,
+) -> Result<Json<ForkResponse>, (StatusCode, Json<ApiError>)> {
+    let new_vmid = state
+        .client
+        .fork_vm(payload.vmid, &payload.name)
+        .await
+        .map_err(map_proxmox_error)?;
+    wait_for_vm(&state.client, new_vmid)
+        .await
+        .map_err(map_proxmox_error)?;
+    Ok(Json(ForkResponse::created(new_vmid)))
 }
 
 #[derive(Debug, Serialize)]
@@ -210,6 +226,35 @@ enum LaunchAction {
     Cancel,
 }
 
+#[derive(Debug, Deserialize)]
+struct ForkRequest {
+    vmid: u64,
+    name: String,
+}
+
+#[derive(Debug, Serialize)]
+struct ForkResponse {
+    status: ForkStatus,
+    message: String,
+    vmid: u64,
+}
+
+impl ForkResponse {
+    fn created(vmid: u64) -> Self {
+        Self {
+            status: ForkStatus::Created,
+            message: "VM fork created.".to_string(),
+            vmid,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ForkStatus {
+    Created,
+}
+
 #[derive(Debug, Serialize)]
 struct ApiError {
     error: String,
@@ -234,6 +279,19 @@ fn map_launch_error(err: LaunchError) -> (StatusCode, Json<ApiError>) {
         ),
         LaunchError::Proxmox(err) => map_proxmox_error(err),
     }
+}
+
+async fn wait_for_vm(client: &ProxmoxClient, vmid: u64) -> Result<(), ProxmoxError> {
+    for _ in 0..30 {
+        let vms = client.list_vms().await?;
+        if vms.iter().any(|vm| vm.vmid == vmid) {
+            return Ok(());
+        }
+        sleep(Duration::from_secs(2)).await;
+    }
+    Err(ProxmoxError::Api(format!(
+        "Timed out waiting for VM {vmid} to appear"
+    )))
 }
 
 #[derive(Debug, Default)]
