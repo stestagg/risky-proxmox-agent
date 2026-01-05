@@ -1,12 +1,8 @@
-mod config;
-mod proxmox;
-mod server;
-
 use tracing::info;
 
-use crate::config::Config;
-use crate::proxmox::ProxmoxClient;
-use crate::server::{router, AppState};
+use risky_proxmox_agent::config::Config;
+use risky_proxmox_agent::proxmox::ProxmoxClient;
+use risky_proxmox_agent::server::{router, AppState};
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
