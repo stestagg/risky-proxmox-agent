@@ -76,8 +76,7 @@ impl ProxmoxClient {
     }
 
     async fn node_for_vmid(&self, vmid: u64) -> Result<String, ProxmoxError> {
-        let path = format!("/cluster/resources?type=vm&vmid={vmid}");
-        let resources: Vec<ResourceVm> = self.get(&path).await?;
+        let resources: Vec<ResourceVm> = self.get("/cluster/resources?type=vm").await?;
         resources
             .into_iter()
             .find(|vm| vm.vmid == vmid)
