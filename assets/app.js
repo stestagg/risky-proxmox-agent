@@ -10,6 +10,10 @@ const forkDialogForm = document.getElementById("fork-dialog-form");
 const forkDialogTitle = document.getElementById("fork-dialog-title");
 const forkNameInput = document.getElementById("fork-name-input");
 const forkDialogCancel = document.getElementById("fork-dialog-cancel");
+const shutdownButton = document.getElementById("shutdown-host");
+const shutdownDialog = document.getElementById("shutdown-dialog");
+const shutdownDialogConfirm = document.getElementById("shutdown-dialog-confirm");
+const shutdownDialogCancel = document.getElementById("shutdown-dialog-cancel");
 
 const statusClasses = {
   running: "status-running",
@@ -179,6 +183,7 @@ async function forkVm(vm) {
 }
 
 refreshButton.addEventListener("click", () => loadVms());
+shutdownButton.addEventListener("click", () => requestHostShutdown());
 
 loadVms();
 
@@ -238,5 +243,69 @@ function promptForForkName(vm) {
     forkDialog.showModal();
     forkNameInput.focus();
     forkNameInput.select();
+  });
+}
+
+async function requestHostShutdown(action) {
+  if (!action) {
+    const confirmed = await confirmHostShutdown();
+    if (!confirmed) {
+      setStatus("Host shutdown cancelled.");
+      return;
+    }
+  }
+
+  setStatus("Submitting host shutdown request…");
+  try {
+    const payload = {};
+    if (action) {
+      payload.action = action;
+    }
+
+    const response = await fetch("/api/host-shutdown", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      throw new Error(err.error || `Shutdown failed: ${response.status}`);
+    }
+
+    const result = await response.json();
+    setStatus(result.message);
+
+    if (result.status === "needs_action") {
+      const runningName = result.running_vm?.name || "Current VM";
+      const actionChoice = await promptForAction(
+        runningName,
+        result.allowed_actions
+      );
+      if (!actionChoice) {
+        setStatus("Host shutdown cancelled.");
+        return;
+      }
+      await requestHostShutdown(actionChoice);
+      return;
+    }
+  } catch (error) {
+    console.error(error);
+    setStatus(error.message);
+  }
+}
+
+function confirmHostShutdown() {
+  return new Promise((resolve) => {
+    const handleClose = () => {
+      resolve(shutdownDialog.returnValue === "confirm");
+    };
+
+    shutdownDialog.addEventListener("close", handleClose, { once: true });
+
+    shutdownDialogConfirm.onclick = () => shutdownDialog.close("confirm");
+    shutdownDialogCancel.onclick = () => shutdownDialog.close("");
+
+    shutdownDialog.showModal();
   });
 }

@@ -57,6 +57,14 @@
         backdrop-filter: blur(6px);
       }
 
+      .shutdown-control {
+        position: fixed;
+        bottom: 24px;
+        left: 24px;
+        display: flex;
+        gap: 8px;
+      }
+
       .grid {
         display: grid;
         gap: 16px;
@@ -135,6 +143,10 @@
         background: #1f2937;
         color: #e2e8f0;
         border: 1px solid #334155;
+      }
+
+      button.danger {
+        background: #dc2626;
       }
 
       button:disabled {
@@ -224,6 +236,9 @@
         <h1>Risky Proxmox Agent</h1>
         <button id="refresh">Refresh</button>
       </header>
+      <div class="shutdown-control">
+        <button class="danger" id="shutdown-host">Shutdown host</button>
+      </div>
       <div class="status-bar" id="status">Loading VM inventory…</div>
       <section class="grid" id="vm-grid"></section>
     </div>
@@ -258,6 +273,20 @@
           </button>
         </div>
       </form>
+    </dialog>
+    <dialog id="shutdown-dialog">
+      <p class="dialog-title">Shutdown host machine?</p>
+      <p class="dialog-help">
+        This will stop running VMs first, then power off the Proxmox host.
+      </p>
+      <div class="dialog-actions">
+        <button class="danger" id="shutdown-dialog-confirm" type="button">
+          Shutdown host
+        </button>
+        <button class="secondary" id="shutdown-dialog-cancel" type="button">
+          Cancel
+        </button>
+      </div>
     </dialog>
     <script src="/assets/app.js"></script>
   </body>

@@ -9,6 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
+use tokio::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -25,6 +26,7 @@ const BACKGROUND_JPG: &[u8] = include_bytes!("../assets/background.jpg");
 pub struct AppState {
     client: ProxmoxClient,
     launch_manager: Arc<LaunchManager>,
+    shutdown_manager: Arc<ShutdownManager>,
 }
 
 impl AppState {
@@ -32,6 +34,7 @@ impl AppState {
         Self {
             client,
             launch_manager: Arc::new(LaunchManager::default()),
+            shutdown_manager: Arc::new(ShutdownManager::default()),
         }
     }
 }
@@ -52,6 +55,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/vms", get(list_vms))
         .route("/api/launch", post(launch))
         .route("/api/fork", post(fork_vm))
+        .route("/api/host-shutdown", post(host_shutdown))
         .with_state(Arc::new(state))
 }
 
@@ -99,6 +103,18 @@ async fn fork_vm(
         .await
         .map_err(map_proxmox_error)?;
     Ok(Json(ForkResponse::created(new_vmid)))
+}
+
+async fn host_shutdown(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ShutdownRequest>,
+) -> Result<Json<ShutdownResponse>, (StatusCode, Json<ApiError>)> {
+    let response = state
+        .shutdown_manager
+        .shutdown(&state.client, payload.action)
+        .await
+        .map_err(map_shutdown_error)?;
+    Ok(Json(response))
 }
 
 #[derive(Debug, Serialize)]
@@ -227,6 +243,61 @@ enum LaunchAction {
 }
 
 #[derive(Debug, Deserialize)]
+struct ShutdownRequest {
+    action: Option<LaunchAction>,
+}
+
+#[derive(Debug, Serialize)]
+struct ShutdownResponse {
+    status: ShutdownStatus,
+    message: String,
+    running_vm: Option<RunningVmInfo>,
+    allowed_actions: Vec<LaunchAction>,
+}
+
+impl ShutdownResponse {
+    fn started() -> Self {
+        Self {
+            status: ShutdownStatus::Started,
+            message: "Host shutdown sequence started.".to_string(),
+            running_vm: None,
+            allowed_actions: Vec::new(),
+        }
+    }
+
+    fn cancelled() -> Self {
+        Self {
+            status: ShutdownStatus::Cancelled,
+            message: "Host shutdown cancelled.".to_string(),
+            running_vm: None,
+            allowed_actions: Vec::new(),
+        }
+    }
+
+    fn needs_action(vm: &VmInfo) -> Self {
+        Self {
+            status: ShutdownStatus::NeedsAction,
+            message: "A VM is currently running; choose an action before shutdown.".to_string(),
+            running_vm: Some(RunningVmInfo::from(vm)),
+            allowed_actions: vec![
+                LaunchAction::Shutdown,
+                LaunchAction::Hibernate,
+                LaunchAction::Terminate,
+                LaunchAction::Cancel,
+            ],
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum ShutdownStatus {
+    Started,
+    NeedsAction,
+    Cancelled,
+}
+
+#[derive(Debug, Deserialize)]
 struct ForkRequest {
     vmid: u64,
     name: String,
@@ -278,6 +349,21 @@ fn map_launch_error(err: LaunchError) -> (StatusCode, Json<ApiError>) {
             }),
         ),
         LaunchError::Proxmox(err) => map_proxmox_error(err),
+    }
+}
+
+fn map_shutdown_error(err: ShutdownError) -> (StatusCode, Json<ApiError>) {
+    match err {
+        ShutdownError::InProgress => (
+            StatusCode::CONFLICT,
+            Json(ApiError {
+                error: "Shutdown already in progress".to_string(),
+            }),
+        ),
+        ShutdownError::Proxmox(err) => map_proxmox_error(err),
+        ShutdownError::ShutdownFailed(err) => {
+            (StatusCode::BAD_GATEWAY, Json(ApiError { error: err }))
+        }
     }
 }
 
@@ -437,6 +523,132 @@ enum LaunchError {
 }
 
 impl From<ProxmoxError> for LaunchError {
+    fn from(value: ProxmoxError) -> Self {
+        Self::Proxmox(value)
+    }
+}
+
+#[derive(Debug, Default)]
+struct ShutdownState {
+    in_progress: bool,
+}
+
+#[derive(Debug, Default)]
+struct ShutdownManager {
+    state: Mutex<ShutdownState>,
+}
+
+impl ShutdownManager {
+    async fn shutdown(
+        &self,
+        client: &ProxmoxClient,
+        action: Option<LaunchAction>,
+    ) -> Result<ShutdownResponse, ShutdownError> {
+        {
+            let state = self.state.lock().await;
+            if state.in_progress {
+                return Err(ShutdownError::InProgress);
+            }
+        }
+
+        let vms = client.list_vms().await?;
+        let running_vm = vms.into_iter().find(|vm| vm.status == VmStatus::Running);
+
+        if let Some(ref running) = running_vm {
+            if action.is_none() {
+                return Ok(ShutdownResponse::needs_action(running));
+            }
+            if matches!(action, Some(LaunchAction::Cancel)) {
+                return Ok(ShutdownResponse::cancelled());
+            }
+        } else if matches!(action, Some(LaunchAction::Cancel)) {
+            return Ok(ShutdownResponse::cancelled());
+        }
+
+        {
+            let mut state = self.state.lock().await;
+            state.in_progress = true;
+        }
+
+        let outcome = self.run_flow(client, running_vm, action).await;
+
+        let mut state = self.state.lock().await;
+        state.in_progress = false;
+
+        outcome?;
+        Ok(ShutdownResponse::started())
+    }
+
+    async fn run_flow(
+        &self,
+        client: &ProxmoxClient,
+        running_vm: Option<VmInfo>,
+        action: Option<LaunchAction>,
+    ) -> Result<(), ShutdownError> {
+        if let Some(running) = running_vm {
+            let selected_action = action.unwrap_or(LaunchAction::Terminate);
+            info!("Resolving running VM {} before host shutdown", running.vmid);
+
+            self.execute_action(client, running.vmid, selected_action)
+                .await?;
+
+            for _ in 0..60 {
+                let status = client.vm_status(running.vmid).await?;
+                if status == VmStatus::Stopped {
+                    break;
+                }
+                sleep(Duration::from_secs(2)).await;
+            }
+
+            let status = client.vm_status(running.vmid).await?;
+            if status != VmStatus::Stopped {
+                return Err(ShutdownError::ShutdownFailed(format!(
+                    "Timed out waiting for VM {} to stop",
+                    running.vmid
+                )));
+            }
+        }
+
+        info!("Initiating host shutdown");
+        tokio::spawn(async {
+            match Command::new("shutdown").arg("-h").arg("now").status().await {
+                Ok(status) => {
+                    if !status.success() {
+                        warn!("Shutdown command exited with status {status}");
+                    }
+                }
+                Err(err) => {
+                    warn!("Failed to execute shutdown command: {err}");
+                }
+            }
+        });
+        Ok(())
+    }
+
+    async fn execute_action(
+        &self,
+        client: &ProxmoxClient,
+        vmid: u64,
+        action: LaunchAction,
+    ) -> Result<(), ShutdownError> {
+        match action {
+            LaunchAction::Shutdown => client.shutdown_vm(vmid).await?,
+            LaunchAction::Hibernate => client.hibernate_vm(vmid).await?,
+            LaunchAction::Terminate => client.terminate_vm(vmid).await?,
+            LaunchAction::Cancel => {}
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+enum ShutdownError {
+    InProgress,
+    Proxmox(ProxmoxError),
+    ShutdownFailed(String),
+}
+
+impl From<ProxmoxError> for ShutdownError {
     fn from(value: ProxmoxError) -> Self {
         Self::Proxmox(value)
     }
