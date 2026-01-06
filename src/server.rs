@@ -9,7 +9,7 @@ use axum::{
     Json, Router,
 };
 use serde::{Deserialize, Serialize};
-use tokio::process::Command;
+use std::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tracing::{info, warn};
@@ -610,8 +610,8 @@ impl ShutdownManager {
         }
 
         info!("Initiating host shutdown");
-        tokio::spawn(async {
-            match Command::new("shutdown").arg("-h").arg("now").status().await {
+        tokio::task::spawn_blocking(|| {
+            match Command::new("shutdown").arg("-h").arg("now").status() {
                 Ok(status) => {
                     if !status.success() {
                         warn!("Shutdown command exited with status {status}");
