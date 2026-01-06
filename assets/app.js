@@ -42,7 +42,7 @@ function renderVms(vms) {
     tags.className = "tags";
     if (vm.tags.length === 0) {
       const emptyTag = document.createElement("span");
-      emptyTag.className = "tag";
+      emptyTag.className = "tag empty";
       emptyTag.textContent = "no tags";
       tags.appendChild(emptyTag);
     } else {
