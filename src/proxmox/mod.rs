@@ -114,9 +114,7 @@ impl ProxmoxClient {
     async fn create_snapshot(&self, vmid: u64, snapshot: &str) -> Result<(), ProxmoxError> {
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/snapshot");
-        let body = SnapshotRequest {
-            snapname: snapshot,
-        };
+        let body = SnapshotRequest { snapname: snapshot };
         self.post_form(&path, &body).await
     }
 
