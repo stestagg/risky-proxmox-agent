@@ -1,8 +1,11 @@
 #include <Alert.h>
 #include <Application.h>
 #include <Button.h>
+#include <File.h>
+#include <FindDirectory.h>
 #include <LayoutBuilder.h>
 #include <ListView.h>
+#include <Path.h>
 #include <ScrollView.h>
 #include <StringItem.h>
 #include <StringView.h>
@@ -25,6 +28,11 @@ const char* kAppSignature = "application/x-vnd.risky-proxmox-haiku-client";
 
 const uint32 kRefreshMessage = 'refr';
 const uint32 kLaunchMessage = 'lnch';
+const uint32 kSettingsMessage = 'stng';
+const uint32 kServerUrlChangedMessage = 'svch';
+
+const char* kDefaultServerUrl = "http://127.0.0.1:3000";
+const char* kSettingsFileName = "risky-proxmox-haiku-client";
 
 struct VmRecord {
     uint64 vmid;
@@ -129,24 +137,35 @@ class MainWindow : public BWindow {
 public:
     MainWindow()
         : BWindow(BRect(80, 80, 760, 520), "Risky Proxmox", B_TITLED_WINDOW, B_AUTO_UPDATE_SIZE_LIMITS)
-        , fServerUrl(new BTextControl("Server:", "http://127.0.0.1:3000", nullptr))
+        , fServerUrl(new BTextControl("Server:", kDefaultServerUrl, nullptr))
         , fVmList(new BListView("vm-list", B_SINGLE_SELECTION_LIST))
         , fStatus(new BStringView("status", "Ready."))
+        , fSettingsButton(new BButton("Settings", new BMessage(kSettingsMessage)))
         , fRefreshButton(new BButton("Refresh", new BMessage(kRefreshMessage)))
         , fLaunchButton(new BButton("Launch Selected VM", new BMessage(kLaunchMessage)))
+        , fSettingsVisible(false)
     {
         fVmList->SetSelectionMessage(new BMessage(kLaunchMessage));
+        fServerUrl->SetModificationMessage(new BMessage(kServerUrlChangedMessage));
+
+        const auto persistedServerUrl = LoadServerUrl();
+        if (!persistedServerUrl.empty()) {
+            fServerUrl->SetText(persistedServerUrl.c_str());
+        }
 
         BLayoutBuilder::Group<>(this, B_VERTICAL, B_USE_DEFAULT_SPACING)
             .SetInsets(B_USE_WINDOW_SPACING)
             .Add(fServerUrl)
             .AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
+                .Add(fSettingsButton)
                 .Add(fRefreshButton)
                 .Add(fLaunchButton)
                 .AddGlue()
             .End()
             .Add(new BScrollView("vm-scroll", fVmList, B_FRAME_EVENTS, false, true))
             .Add(fStatus);
+
+        fServerUrl->Hide();
 
         RefreshVmList();
     }
@@ -160,6 +179,12 @@ public:
     void MessageReceived(BMessage* message) override
     {
         switch (message->what) {
+        case kSettingsMessage:
+            ToggleSettings();
+            return;
+        case kServerUrlChangedMessage:
+            SaveServerUrl(ServerUrl());
+            return;
         case kRefreshMessage:
             RefreshVmList();
             return;
@@ -185,6 +210,71 @@ private:
         return Trim(fServerUrl->Text());
     }
 
+    void ToggleSettings()
+    {
+        fSettingsVisible = !fSettingsVisible;
+        if (fSettingsVisible) {
+            fServerUrl->Show();
+        } else {
+            fServerUrl->Hide();
+        }
+    }
+
+    std::string SettingsFilePath() const
+    {
+        BPath settingsDir;
+        if (find_directory(B_USER_SETTINGS_DIRECTORY, &settingsDir) != B_OK) {
+            return "";
+        }
+
+        if (settingsDir.Append(kSettingsFileName) != B_OK) {
+            return "";
+        }
+
+        return settingsDir.Path();
+    }
+
+    std::string LoadServerUrl() const
+    {
+        const std::string settingsPath = SettingsFilePath();
+        if (settingsPath.empty()) {
+            return "";
+        }
+
+        BFile settingsFile(settingsPath.c_str(), B_READ_ONLY);
+        if (settingsFile.InitCheck() != B_OK) {
+            return "";
+        }
+
+        char buffer[512] {};
+        const auto bytesRead = settingsFile.Read(buffer, sizeof(buffer) - 1);
+        if (bytesRead <= 0) {
+            return "";
+        }
+
+        return Trim(std::string(buffer, static_cast<size_t>(bytesRead)));
+    }
+
+    void SaveServerUrl(const std::string& url)
+    {
+        const std::string trimmedUrl = Trim(url);
+        if (trimmedUrl.empty()) {
+            return;
+        }
+
+        const std::string settingsPath = SettingsFilePath();
+        if (settingsPath.empty()) {
+            return;
+        }
+
+        BFile settingsFile(settingsPath.c_str(), B_WRITE_ONLY | B_CREATE_FILE | B_ERASE_FILE);
+        if (settingsFile.InitCheck() != B_OK) {
+            return;
+        }
+
+        settingsFile.Write(trimmedUrl.c_str(), trimmedUrl.size());
+    }
+
     void RefreshVmList()
     {
         const std::string url = ServerUrl();
@@ -192,6 +282,8 @@ private:
             SetStatus("Enter a server URL first.");
             return;
         }
+
+        SaveServerUrl(url);
 
         SetStatus("Loading VM inventory...");
         const std::string body = ApiRequest(url, "/api/vms");
@@ -278,8 +370,10 @@ private:
     BTextControl* fServerUrl;
     BListView* fVmList;
     BStringView* fStatus;
+    BButton* fSettingsButton;
     BButton* fRefreshButton;
     BButton* fLaunchButton;
+    bool fSettingsVisible;
     std::vector<VmRecord> fVms;
 };
 
