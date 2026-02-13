@@ -22,6 +22,16 @@ pub struct Config {
     pub pve_token_secret: String,
     pub pve_insecure_ssl: bool,
     pub pve_fallback_vm: Option<String>,
+    pub remote_log: Option<RemoteLogConfig>,
+}
+
+#[derive(Debug, Clone)]
+pub struct RemoteLogConfig {
+    pub upload_url: String,
+    pub authorization_secret: String,
+    pub max_pending_bytes: usize,
+    pub max_upload_bytes: usize,
+    pub upload_delay_secs: f64,
 }
 
 impl Config {
@@ -34,6 +44,7 @@ impl Config {
         let pve_token_secret = read_env("PVE_TOKEN_SECRET")?;
         let pve_insecure_ssl = read_env_bool("PVE_INSECURE_SSL").unwrap_or(false);
         let pve_fallback_vm = read_env_optional("PVE_FALLBACK_VM");
+        let remote_log = read_remote_log_config()?;
 
         Ok(Self {
             bind: args.bind,
@@ -43,7 +54,30 @@ impl Config {
             pve_token_secret,
             pve_insecure_ssl,
             pve_fallback_vm,
+            remote_log,
         })
+    }
+}
+
+fn read_remote_log_config() -> Result<Option<RemoteLogConfig>, String> {
+    let upload_url = read_env_optional("REMOTE_LOG_UPLOAD_URL");
+    let authorization_secret = read_env_optional("REMOTE_LOG_AUTHORIZATION_SECRET");
+
+    match (upload_url, authorization_secret) {
+        (None, None) => Ok(None),
+        (Some(upload_url), Some(authorization_secret)) => Ok(Some(RemoteLogConfig {
+            upload_url,
+            authorization_secret,
+            max_pending_bytes: read_env_usize("REMOTE_LOG_MAX_PENDING_BYTES")
+                .unwrap_or(50 * 1024 * 1024),
+            max_upload_bytes: read_env_usize("REMOTE_LOG_MAX_UPLOAD_BYTES")
+                .unwrap_or(5 * 1024 * 1024),
+            upload_delay_secs: read_env_f64("REMOTE_LOG_UPLOAD_DELAY_SECS").unwrap_or(5.0),
+        })),
+        _ => Err(
+            "REMOTE_LOG_UPLOAD_URL and REMOTE_LOG_AUTHORIZATION_SECRET must be set together"
+                .to_string(),
+        ),
     }
 }
 
@@ -66,4 +100,16 @@ fn read_env_optional(key: &str) -> Option<String> {
         .ok()
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn read_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<usize>().ok())
+}
+
+fn read_env_f64(key: &str) -> Option<f64> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.trim().parse::<f64>().ok())
 }
