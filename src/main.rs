@@ -1,20 +1,39 @@
-use tracing::info;
-
 use risky_proxmox_agent::config::Config;
 use risky_proxmox_agent::fallback::spawn_fallback_task;
 use risky_proxmox_agent::proxmox::ProxmoxClient;
+use risky_proxmox_agent::remote_log::{RemoteLogHandle, RemoteLogMakeWriter};
 use risky_proxmox_agent::server::{router, AppState};
+use tracing::info;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .init();
-
     let config = Config::from_env().map_err(|err| {
-        tracing::error!("{err}");
+        eprintln!("{err}");
         err
     })?;
+
+    let env_filter = tracing_subscriber::EnvFilter::from_default_env();
+    let stdout_layer = tracing_subscriber::fmt::layer().with_filter(env_filter.clone());
+
+    if let Some(remote_config) = config.remote_log.clone() {
+        let remote = RemoteLogHandle::new(remote_config);
+        remote.spawn_upload_loop();
+
+        let remote_layer = tracing_subscriber::fmt::layer()
+            .json()
+            .with_current_span(false)
+            .with_span_list(false)
+            .with_writer(RemoteLogMakeWriter::new(remote))
+            .with_filter(env_filter);
+
+        tracing_subscriber::registry()
+            .with(stdout_layer)
+            .with(remote_layer)
+            .init();
+    } else {
+        tracing_subscriber::registry().with(stdout_layer).init();
+    }
 
     let client = ProxmoxClient::new(
         config.pve_host,
