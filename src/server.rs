@@ -407,6 +407,10 @@ fn map_launch_error(err: LaunchError) -> (StatusCode, Json<ApiError>) {
                 }),
             )
         }
+        LaunchError::LaunchFailed(err) => {
+            warn!(error = %err, "Launch workflow failed");
+            (StatusCode::BAD_GATEWAY, Json(ApiError { error: err }))
+        }
         LaunchError::Proxmox(err) => map_proxmox_error(err),
     }
 }
@@ -558,9 +562,9 @@ impl LaunchManager {
             self.execute_action(client, running.vmid, current_action)
                 .await?;
 
-            loop {
+            for attempt in 1..=60 {
                 let status = client.vm_status(running.vmid).await?;
-                debug!(running_vmid = running.vmid, status = ?status, "Waiting for running VM to stop");
+                debug!(running_vmid = running.vmid, attempt, status = ?status, "Waiting for running VM to stop");
                 if status == VmStatus::Stopped {
                     info!(
                         running_vmid = running.vmid,
@@ -587,6 +591,15 @@ impl LaunchManager {
                 }
 
                 sleep(Duration::from_secs(2)).await;
+            }
+
+            let status = client.vm_status(running.vmid).await?;
+            debug!(running_vmid = running.vmid, status = ?status, "Final VM status check before launch");
+            if status != VmStatus::Stopped {
+                return Err(LaunchError::LaunchFailed(format!(
+                    "Timed out waiting for VM {} to stop before launch",
+                    running.vmid
+                )));
             }
         }
 
@@ -616,6 +629,7 @@ impl LaunchManager {
 #[derive(Debug)]
 enum LaunchError {
     InProgress,
+    LaunchFailed(String),
     Proxmox(ProxmoxError),
 }
 
