@@ -2,8 +2,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use axum::{
-    extract::State,
-    http::StatusCode,
+    extract::{MatchedPath, State},
+    http::{Request, StatusCode},
     response::{Html, IntoResponse},
     routing::{get, post},
     Json, Router,
@@ -12,7 +12,8 @@ use serde::{Deserialize, Serialize};
 use std::process::Command;
 use tokio::sync::Mutex;
 use tokio::time::sleep;
-use tracing::{info, warn};
+use tower_http::trace::TraceLayer;
+use tracing::{debug, error, info, warn, Span};
 
 use crate::proxmox::error::ProxmoxError;
 use crate::proxmox::types::{VmInfo, VmStatus};
@@ -56,14 +57,60 @@ pub fn router(state: AppState) -> Router {
         .route("/api/launch", post(launch))
         .route("/api/fork", post(fork_vm))
         .route("/api/host-shutdown", post(host_shutdown))
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &Request<_>| {
+                    let matched_path = request
+                        .extensions()
+                        .get::<MatchedPath>()
+                        .map(MatchedPath::as_str)
+                        .unwrap_or("<unmatched>");
+                    tracing::info_span!(
+                        "http_request",
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        matched_path,
+                    )
+                })
+                .on_request(|request: &Request<_>, _span: &Span| {
+                    info!(
+                        method = %request.method(),
+                        path = %request.uri().path(),
+                        query = ?request.uri().query(),
+                        "Incoming HTTP request"
+                    );
+                })
+                .on_response(
+                    |response: &axum::http::Response<_>, latency: Duration, _span: &Span| {
+                        info!(
+                            status = %response.status(),
+                            latency_ms = latency.as_millis(),
+                            "HTTP request completed"
+                        );
+                    },
+                )
+                .on_failure(
+                    |error: tower_http::classify::ServerErrorsFailureClass,
+                     latency: Duration,
+                     _span: &Span| {
+                        error!(
+                            failure = ?error,
+                            latency_ms = latency.as_millis(),
+                            "HTTP request failed"
+                        );
+                    },
+                ),
+        )
         .with_state(Arc::new(state))
 }
 
 async fn index() -> Html<&'static str> {
+    debug!("Serving index page");
     Html(INDEX_HTML)
 }
 
 async fn app_js() -> impl IntoResponse {
+    debug!("Serving app JavaScript");
     (
         [(axum::http::header::CONTENT_TYPE, "application/javascript")],
         APP_JS,
@@ -73,7 +120,9 @@ async fn app_js() -> impl IntoResponse {
 async fn list_vms(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<ApiVm>>, (StatusCode, Json<ApiError>)> {
+    info!("Listing VMs");
     let vms = state.client.list_vms().await.map_err(map_proxmox_error)?;
+    info!(vm_count = vms.len(), "VM list retrieved");
     let response = vms.into_iter().map(ApiVm::from).collect();
     Ok(Json(response))
 }
@@ -82,11 +131,13 @@ async fn launch(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<LaunchRequest>,
 ) -> Result<Json<LaunchResponse>, (StatusCode, Json<ApiError>)> {
+    info!(target_vmid = payload.vmid, action = ?payload.action, "Launch request received");
     let response = state
         .launch_manager
         .launch(&state.client, payload.vmid, payload.action)
         .await
         .map_err(map_launch_error)?;
+    info!(target_vmid = payload.vmid, status = ?response.status, "Launch request completed");
     Ok(Json(response))
 }
 
@@ -94,6 +145,7 @@ async fn fork_vm(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ForkRequest>,
 ) -> Result<Json<ForkResponse>, (StatusCode, Json<ApiError>)> {
+    info!(source_vmid = payload.vmid, new_name = %payload.name, "Fork request received");
     let new_vmid = state
         .client
         .fork_vm(payload.vmid, &payload.name)
@@ -102,6 +154,7 @@ async fn fork_vm(
     wait_for_vm(&state.client, new_vmid)
         .await
         .map_err(map_proxmox_error)?;
+    info!(new_vmid, "Fork request completed");
     Ok(Json(ForkResponse::created(new_vmid)))
 }
 
@@ -109,11 +162,13 @@ async fn host_shutdown(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ShutdownRequest>,
 ) -> Result<Json<ShutdownResponse>, (StatusCode, Json<ApiError>)> {
+    info!(action = ?payload.action, "Host shutdown request received");
     let response = state
         .shutdown_manager
         .shutdown(&state.client, payload.action)
         .await
         .map_err(map_shutdown_error)?;
+    info!(status = ?response.status, "Host shutdown request completed");
     Ok(Json(response))
 }
 
@@ -332,6 +387,7 @@ struct ApiError {
 }
 
 fn map_proxmox_error(err: ProxmoxError) -> (StatusCode, Json<ApiError>) {
+    warn!(error = %err, "Proxmox API call failed");
     (
         StatusCode::BAD_GATEWAY,
         Json(ApiError {
@@ -342,39 +398,50 @@ fn map_proxmox_error(err: ProxmoxError) -> (StatusCode, Json<ApiError>) {
 
 fn map_launch_error(err: LaunchError) -> (StatusCode, Json<ApiError>) {
     match err {
-        LaunchError::InProgress => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "Launch already in progress".to_string(),
-            }),
-        ),
+        LaunchError::InProgress => {
+            warn!("Rejected launch request while another launch is in progress");
+            (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "Launch already in progress".to_string(),
+                }),
+            )
+        }
         LaunchError::Proxmox(err) => map_proxmox_error(err),
     }
 }
 
 fn map_shutdown_error(err: ShutdownError) -> (StatusCode, Json<ApiError>) {
     match err {
-        ShutdownError::InProgress => (
-            StatusCode::CONFLICT,
-            Json(ApiError {
-                error: "Shutdown already in progress".to_string(),
-            }),
-        ),
+        ShutdownError::InProgress => {
+            warn!("Rejected shutdown request while another shutdown is in progress");
+            (
+                StatusCode::CONFLICT,
+                Json(ApiError {
+                    error: "Shutdown already in progress".to_string(),
+                }),
+            )
+        }
         ShutdownError::Proxmox(err) => map_proxmox_error(err),
         ShutdownError::ShutdownFailed(err) => {
+            warn!(error = %err, "Host shutdown workflow failed");
             (StatusCode::BAD_GATEWAY, Json(ApiError { error: err }))
         }
     }
 }
 
 async fn wait_for_vm(client: &ProxmoxClient, vmid: u64) -> Result<(), ProxmoxError> {
-    for _ in 0..30 {
+    info!(vmid, "Waiting for forked VM to appear in Proxmox inventory");
+    for attempt in 1..=30 {
         let vms = client.list_vms().await?;
         if vms.iter().any(|vm| vm.vmid == vmid) {
+            info!(vmid, attempt, "Forked VM is now visible");
             return Ok(());
         }
+        debug!(vmid, attempt, "Forked VM not visible yet; retrying");
         sleep(Duration::from_secs(2)).await;
     }
+    warn!(vmid, "Timed out waiting for forked VM to appear");
     Err(ProxmoxError::Api(format!(
         "Timed out waiting for VM {vmid} to appear"
     )))
@@ -401,7 +468,12 @@ impl LaunchManager {
         {
             let mut state = self.state.lock().await;
             if state.in_progress {
+                warn!(target_vmid, action = ?action, "Launch requested while another launch is in progress");
                 if matches!(action, Some(LaunchAction::Terminate)) {
+                    info!(
+                        target_vmid,
+                        "Queued terminate escalation for in-progress launch"
+                    );
                     state.requested_action = Some(LaunchAction::Terminate);
                     return Ok(LaunchResponse::updated());
                 }
@@ -409,11 +481,13 @@ impl LaunchManager {
             }
         }
 
+        info!(target_vmid, action = ?action, "Evaluating launch preconditions");
         let vms = client.list_vms().await?;
         let running_vm = vms.into_iter().find(|vm| vm.status == VmStatus::Running);
 
         if let Some(ref running) = running_vm {
             if running.vmid == target_vmid {
+                info!(target_vmid, "Launch target is already running");
                 return Ok(LaunchResponse::already_running());
             }
 
@@ -423,15 +497,29 @@ impl LaunchManager {
                 .any(|tag| tag.eq_ignore_ascii_case("easy-kill"));
 
             if action.is_none() && easy_kill {
+                info!(
+                    running_vmid = running.vmid,
+                    "Auto-selecting terminate for easy-kill VM"
+                );
                 action = Some(LaunchAction::Terminate);
             }
 
             match action {
-                None => return Ok(LaunchResponse::needs_action(running)),
-                Some(LaunchAction::Cancel) => return Ok(LaunchResponse::cancelled()),
+                None => {
+                    info!(
+                        running_vmid = running.vmid,
+                        target_vmid, "Launch requires user action due to running VM"
+                    );
+                    return Ok(LaunchResponse::needs_action(running));
+                }
+                Some(LaunchAction::Cancel) => {
+                    info!(target_vmid, "Launch cancelled by client");
+                    return Ok(LaunchResponse::cancelled());
+                }
                 _ => {}
             }
         } else if matches!(action, Some(LaunchAction::Cancel)) {
+            info!(target_vmid, "Launch cancelled without active running VM");
             return Ok(LaunchResponse::cancelled());
         }
 
@@ -439,6 +527,7 @@ impl LaunchManager {
             let mut state = self.state.lock().await;
             state.in_progress = true;
             state.requested_action = action;
+            info!(target_vmid, action = ?action, "Launch flow marked in progress");
         }
 
         let outcome = self.run_flow(client, target_vmid, running_vm, action).await;
@@ -448,6 +537,7 @@ impl LaunchManager {
         state.requested_action = None;
 
         outcome?;
+        info!(target_vmid, "Launch flow completed successfully");
         Ok(LaunchResponse::started())
     }
 
@@ -470,7 +560,12 @@ impl LaunchManager {
 
             loop {
                 let status = client.vm_status(running.vmid).await?;
+                debug!(running_vmid = running.vmid, status = ?status, "Waiting for running VM to stop");
                 if status == VmStatus::Stopped {
+                    info!(
+                        running_vmid = running.vmid,
+                        "Running VM is stopped; proceeding with launch"
+                    );
                     break;
                 }
 
@@ -495,7 +590,7 @@ impl LaunchManager {
             }
         }
 
-        info!("Starting VM {}", target_vmid);
+        info!(target_vmid, "Starting target VM");
         client.start_vm(target_vmid).await?;
         Ok(())
     }
@@ -506,12 +601,14 @@ impl LaunchManager {
         vmid: u64,
         action: LaunchAction,
     ) -> Result<(), LaunchError> {
+        info!(vmid, action = ?action, "Executing VM action for launch flow");
         match action {
             LaunchAction::Shutdown => client.shutdown_vm(vmid).await?,
             LaunchAction::Hibernate => client.hibernate_vm(vmid).await?,
             LaunchAction::Terminate => client.terminate_vm(vmid).await?,
             LaunchAction::Cancel => {}
         }
+        info!(vmid, action = ?action, "Launch flow VM action command sent");
         Ok(())
     }
 }
@@ -547,27 +644,36 @@ impl ShutdownManager {
         {
             let state = self.state.lock().await;
             if state.in_progress {
+                warn!(action = ?action, "Host shutdown requested while shutdown already in progress");
                 return Err(ShutdownError::InProgress);
             }
         }
 
+        info!(action = ?action, "Evaluating host shutdown preconditions");
         let vms = client.list_vms().await?;
         let running_vm = vms.into_iter().find(|vm| vm.status == VmStatus::Running);
 
         if let Some(ref running) = running_vm {
             if action.is_none() {
+                info!(
+                    running_vmid = running.vmid,
+                    "Host shutdown requires VM action selection"
+                );
                 return Ok(ShutdownResponse::needs_action(running));
             }
             if matches!(action, Some(LaunchAction::Cancel)) {
+                info!("Host shutdown cancelled by client");
                 return Ok(ShutdownResponse::cancelled());
             }
         } else if matches!(action, Some(LaunchAction::Cancel)) {
+            info!("Host shutdown cancelled before work started");
             return Ok(ShutdownResponse::cancelled());
         }
 
         {
             let mut state = self.state.lock().await;
             state.in_progress = true;
+            info!(action = ?action, "Host shutdown flow marked in progress");
         }
 
         let outcome = self.run_flow(client, running_vm, action).await;
@@ -576,6 +682,7 @@ impl ShutdownManager {
         state.in_progress = false;
 
         outcome?;
+        info!("Host shutdown flow completed successfully");
         Ok(ShutdownResponse::started())
     }
 
@@ -592,15 +699,21 @@ impl ShutdownManager {
             self.execute_action(client, running.vmid, selected_action)
                 .await?;
 
-            for _ in 0..60 {
+            for attempt in 1..=60 {
                 let status = client.vm_status(running.vmid).await?;
+                debug!(running_vmid = running.vmid, attempt, status = ?status, "Waiting for VM to stop before host shutdown");
                 if status == VmStatus::Stopped {
+                    info!(
+                        running_vmid = running.vmid,
+                        "VM stopped before host shutdown"
+                    );
                     break;
                 }
                 sleep(Duration::from_secs(2)).await;
             }
 
             let status = client.vm_status(running.vmid).await?;
+            debug!(running_vmid = running.vmid, status = ?status, "Final VM status check before host shutdown");
             if status != VmStatus::Stopped {
                 return Err(ShutdownError::ShutdownFailed(format!(
                     "Timed out waiting for VM {} to stop",
@@ -609,12 +722,14 @@ impl ShutdownManager {
             }
         }
 
-        info!("Initiating host shutdown");
+        info!("Initiating host shutdown command");
         tokio::task::spawn_blocking(|| {
             match Command::new("shutdown").arg("-h").arg("now").status() {
                 Ok(status) => {
                     if !status.success() {
                         warn!("Shutdown command exited with status {status}");
+                    } else {
+                        info!("Shutdown command executed successfully");
                     }
                 }
                 Err(err) => {
@@ -631,12 +746,14 @@ impl ShutdownManager {
         vmid: u64,
         action: LaunchAction,
     ) -> Result<(), ShutdownError> {
+        info!(vmid, action = ?action, "Executing VM action");
         match action {
             LaunchAction::Shutdown => client.shutdown_vm(vmid).await?,
             LaunchAction::Hibernate => client.hibernate_vm(vmid).await?,
             LaunchAction::Terminate => client.terminate_vm(vmid).await?,
             LaunchAction::Cancel => {}
         }
+        info!(vmid, action = ?action, "VM action command sent");
         Ok(())
     }
 }

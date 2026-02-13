@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
+use tracing::{debug, info, warn};
 
 use crate::proxmox::error::ProxmoxError;
 use crate::proxmox::types::{parse_tags, VmInfo, VmStatus};
@@ -23,20 +24,23 @@ impl ProxmoxClient {
         token_secret: &str,
         insecure_ssl: bool,
     ) -> Result<Self, ProxmoxError> {
+        let base_url = base_url.into();
+        info!(%base_url, insecure_ssl, "Creating Proxmox HTTP client");
         let client = reqwest::Client::builder()
             .danger_accept_invalid_certs(insecure_ssl)
             .build()?;
         Ok(Self {
-            base_url: base_url.into(),
+            base_url,
             token: format!("PVEAPIToken={token_id}={token_secret}"),
             client,
         })
     }
 
     pub async fn list_vms(&self) -> Result<Vec<VmInfo>, ProxmoxError> {
+        debug!("Fetching VM inventory from Proxmox");
         let resources: Vec<ResourceVm> = self.get("/cluster/resources?type=vm").await?;
 
-        Ok(resources
+        let vms: Vec<VmInfo> = resources
             .into_iter()
             .map(|vm| VmInfo {
                 vmid: vm.vmid,
@@ -45,14 +49,19 @@ impl ProxmoxClient {
                 status: VmStatus::normalize(vm.status.as_deref()),
                 notes: vm.description.filter(|note| !note.trim().is_empty()),
             })
-            .collect())
+            .collect();
+        info!(vm_count = vms.len(), "Fetched VM inventory");
+        Ok(vms)
     }
 
     pub async fn vm_status(&self, vmid: u64) -> Result<VmStatus, ProxmoxError> {
+        debug!(vmid, "Fetching VM status");
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/status/current");
         let status: StatusResponse = self.get(&path).await?;
-        Ok(VmStatus::normalize(Some(&status.status)))
+        let normalized = VmStatus::normalize(Some(&status.status));
+        debug!(vmid, status = ?normalized, "Fetched VM status");
+        Ok(normalized)
     }
 
     pub async fn start_vm(&self, vmid: u64) -> Result<(), ProxmoxError> {
@@ -76,6 +85,7 @@ impl ProxmoxClient {
     }
 
     pub async fn fork_vm(&self, vmid: u64, name: &str) -> Result<u64, ProxmoxError> {
+        info!(source_vmid = vmid, new_name = %name, "Forking VM");
         let snapshot = format!(
             "fork-{}",
             SystemTime::now()
@@ -86,32 +96,45 @@ impl ProxmoxClient {
         let newid = self.next_vmid().await?;
         self.create_snapshot(vmid, &snapshot).await?;
         self.clone_vm(vmid, newid, name, &snapshot).await?;
+        info!(source_vmid = vmid, new_vmid = newid, snapshot = %snapshot, "Fork command sent");
         Ok(newid)
     }
 
     async fn node_for_vmid(&self, vmid: u64) -> Result<String, ProxmoxError> {
+        debug!(vmid, "Resolving node for VM");
         let resources: Vec<ResourceVm> = self.get("/cluster/resources?type=vm").await?;
         resources
             .into_iter()
             .find(|vm| vm.vmid == vmid)
             .and_then(|vm| vm.node)
             .ok_or(ProxmoxError::MissingNode(vmid))
+            .map(|node| {
+                debug!(vmid, node = %node, "Resolved node for VM");
+                node
+            })
     }
 
     async fn post_status(&self, vmid: u64, action: &str) -> Result<(), ProxmoxError> {
+        info!(vmid, action, "Sending VM status action");
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/status/{action}");
         self.post(&path).await
     }
 
     async fn next_vmid(&self) -> Result<u64, ProxmoxError> {
+        debug!("Requesting next available VMID");
         let nextid: String = self.get("/cluster/nextid").await?;
         nextid
             .parse()
             .map_err(|err| ProxmoxError::Api(format!("Invalid next VMID: {err}")))
+            .map(|id| {
+                debug!(next_vmid = id, "Received next VMID");
+                id
+            })
     }
 
     async fn create_snapshot(&self, vmid: u64, snapshot: &str) -> Result<(), ProxmoxError> {
+        info!(vmid, snapshot, "Creating VM snapshot for fork");
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/snapshot");
         let body = SnapshotRequest { snapname: snapshot };
@@ -125,6 +148,7 @@ impl ProxmoxClient {
         name: &str,
         snapshot: &str,
     ) -> Result<(), ProxmoxError> {
+        info!(source_vmid = vmid, new_vmid = newid, new_name = %name, snapshot, "Cloning VM from snapshot");
         let node = self.node_for_vmid(vmid).await?;
         let path = format!("/nodes/{node}/qemu/{vmid}/clone");
         let body = CloneRequest {
@@ -138,39 +162,45 @@ impl ProxmoxClient {
 
     async fn get<T: DeserializeOwned>(&self, path: &str) -> Result<T, ProxmoxError> {
         let url = self.endpoint(path);
+        debug!(method = "GET", %url, "Sending Proxmox request");
         let response = self
             .client
-            .get(url)
+            .get(&url)
             .header(reqwest::header::AUTHORIZATION, self.token.clone())
             .send()
             .await?;
         let response = Self::ensure_success(response).await?;
+        debug!(method = "GET", %url, status = %response.status(), "Proxmox request succeeded");
         let response: ApiResponse<T> = response.json().await?;
         Ok(response.data)
     }
 
     async fn post(&self, path: &str) -> Result<(), ProxmoxError> {
         let url = self.endpoint(path);
+        debug!(method = "POST", %url, "Sending Proxmox request");
         let response = self
             .client
-            .post(url)
+            .post(&url)
             .header(reqwest::header::AUTHORIZATION, self.token.clone())
             .send()
             .await?;
-        let _ = Self::ensure_success(response).await?;
+        let response = Self::ensure_success(response).await?;
+        debug!(method = "POST", %url, status = %response.status(), "Proxmox request succeeded");
         Ok(())
     }
 
     async fn post_form<T: Serialize>(&self, path: &str, body: &T) -> Result<(), ProxmoxError> {
         let url = self.endpoint(path);
+        debug!(method = "POST", %url, "Sending Proxmox form request");
         let response = self
             .client
-            .post(url)
+            .post(&url)
             .header(reqwest::header::AUTHORIZATION, self.token.clone())
             .form(body)
             .send()
             .await?;
-        let _ = Self::ensure_success(response).await?;
+        let response = Self::ensure_success(response).await?;
+        debug!(method = "POST", %url, status = %response.status(), "Proxmox form request succeeded");
         Ok(())
     }
 
@@ -182,6 +212,7 @@ impl ProxmoxClient {
         } else {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
+            warn!(%status, body = %body, "Proxmox request returned non-success status");
             Err(ProxmoxError::Api(format!("status {status}, body {body}")))
         }
     }
