@@ -69,17 +69,19 @@ impl RemoteLogHandle {
         }
 
         let mut payload = Vec::new();
+        payload.push(b'[');
         for line in next_batch {
-            if !payload.is_empty() {
-                payload.push(b'\n');
+            if payload.len() > 1 {
+                payload.push(b',');
             }
             payload.extend_from_slice(&line);
         }
+        payload.push(b']');
 
         let response = self
             .client
             .post(self.upload_url.as_ref())
-            .header("Content-Type", "application/x-ndjson")
+            .header("Content-Type", "application/json")
             .header("Authorization", self.authorization_secret.as_ref())
             .body(payload)
             .send()
