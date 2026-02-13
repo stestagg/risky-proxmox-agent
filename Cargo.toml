@@ -13,6 +13,7 @@ serde_json = "1.0"
 tokio = { version = "1.38", features = ["macros", "rt-multi-thread", "sync", "time"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt", "json"] }
+tower-http = { version = "0.6", features = ["trace"] }
 
 [dev-dependencies]
 proxmox-dummy = { path = "crates/proxmox-dummy" }
