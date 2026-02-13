@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex, MutexGuard};
 use std::time::Duration;
 
 use axum::{
@@ -459,10 +459,26 @@ struct LaunchState {
 
 #[derive(Debug, Default)]
 struct LaunchManager {
-    state: Mutex<LaunchState>,
+    state: StdMutex<LaunchState>,
+}
+
+struct LaunchProgressGuard<'a> {
+    manager: &'a LaunchManager,
+}
+
+impl Drop for LaunchProgressGuard<'_> {
+    fn drop(&mut self) {
+        let mut state = self.manager.lock_state();
+        state.in_progress = false;
+        state.requested_action = None;
+    }
 }
 
 impl LaunchManager {
+    fn lock_state(&self) -> MutexGuard<'_, LaunchState> {
+        self.state.lock().unwrap_or_else(|err| err.into_inner())
+    }
+
     async fn launch(
         &self,
         client: &ProxmoxClient,
@@ -470,7 +486,7 @@ impl LaunchManager {
         mut action: Option<LaunchAction>,
     ) -> Result<LaunchResponse, LaunchError> {
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.lock_state();
             if state.in_progress {
                 warn!(target_vmid, action = ?action, "Launch requested while another launch is in progress");
                 if matches!(action, Some(LaunchAction::Terminate)) {
@@ -528,17 +544,15 @@ impl LaunchManager {
         }
 
         {
-            let mut state = self.state.lock().await;
+            let mut state = self.lock_state();
             state.in_progress = true;
             state.requested_action = action;
             info!(target_vmid, action = ?action, "Launch flow marked in progress");
         }
 
-        let outcome = self.run_flow(client, target_vmid, running_vm, action).await;
+        let _progress_guard = LaunchProgressGuard { manager: self };
 
-        let mut state = self.state.lock().await;
-        state.in_progress = false;
-        state.requested_action = None;
+        let outcome = self.run_flow(client, target_vmid, running_vm, action).await;
 
         outcome?;
         info!(target_vmid, "Launch flow completed successfully");
@@ -574,7 +588,7 @@ impl LaunchManager {
                 }
 
                 let requested_action = {
-                    let state = self.state.lock().await;
+                    let state = self.lock_state();
                     state.requested_action
                 };
 
