@@ -134,7 +134,8 @@ async fn launch(
     info!(target_vmid = payload.vmid, action = ?payload.action, "Launch request received");
     let response = state
         .launch_manager
-        .launch(&state.client, payload.vmid, payload.action)
+        .clone()
+        .launch(state.client.clone(), payload.vmid, payload.action)
         .await
         .map_err(map_launch_error)?;
     info!(target_vmid = payload.vmid, status = ?response.status, "Launch request completed");
@@ -165,7 +166,8 @@ async fn host_shutdown(
     info!(action = ?payload.action, "Host shutdown request received");
     let response = state
         .shutdown_manager
-        .shutdown(&state.client, payload.action)
+        .clone()
+        .shutdown(state.client.clone(), payload.action)
         .await
         .map_err(map_shutdown_error)?;
     info!(status = ?response.status, "Host shutdown request completed");
@@ -462,26 +464,20 @@ struct LaunchManager {
     state: StdMutex<LaunchState>,
 }
 
-struct LaunchProgressGuard<'a> {
-    manager: &'a LaunchManager,
-}
-
-impl Drop for LaunchProgressGuard<'_> {
-    fn drop(&mut self) {
-        let mut state = self.manager.lock_state();
+impl LaunchManager {
+    fn reset_state(&self) {
+        let mut state = self.lock_state();
         state.in_progress = false;
         state.requested_action = None;
     }
-}
 
-impl LaunchManager {
     fn lock_state(&self) -> MutexGuard<'_, LaunchState> {
         self.state.lock().unwrap_or_else(|err| err.into_inner())
     }
 
     async fn launch(
-        &self,
-        client: &ProxmoxClient,
+        self: Arc<Self>,
+        client: ProxmoxClient,
         target_vmid: u64,
         mut action: Option<LaunchAction>,
     ) -> Result<LaunchResponse, LaunchError> {
@@ -550,12 +546,23 @@ impl LaunchManager {
             info!(target_vmid, action = ?action, "Launch flow marked in progress");
         }
 
-        let _progress_guard = LaunchProgressGuard { manager: self };
+        let manager = Arc::clone(&self);
+        tokio::spawn(async move {
+            let outcome = manager
+                .run_flow(&client, target_vmid, running_vm, action)
+                .await;
+            match outcome {
+                Ok(()) => {
+                    info!(target_vmid, "Launch flow completed successfully");
+                }
+                Err(err) => {
+                    warn!(target_vmid, error = ?err, "Launch flow failed");
+                }
+            }
+            manager.reset_state();
+        });
 
-        let outcome = self.run_flow(client, target_vmid, running_vm, action).await;
-
-        outcome?;
-        info!(target_vmid, "Launch flow completed successfully");
+        info!(target_vmid, "Launch flow detached from request lifecycle");
         Ok(LaunchResponse::started())
     }
 
@@ -665,8 +672,8 @@ struct ShutdownManager {
 
 impl ShutdownManager {
     async fn shutdown(
-        &self,
-        client: &ProxmoxClient,
+        self: Arc<Self>,
+        client: ProxmoxClient,
         action: Option<LaunchAction>,
     ) -> Result<ShutdownResponse, ShutdownError> {
         {
@@ -704,13 +711,23 @@ impl ShutdownManager {
             info!(action = ?action, "Host shutdown flow marked in progress");
         }
 
-        let outcome = self.run_flow(client, running_vm, action).await;
+        let manager = Arc::clone(&self);
+        tokio::spawn(async move {
+            let outcome = manager.run_flow(&client, running_vm, action).await;
+            match outcome {
+                Ok(()) => {
+                    info!("Host shutdown flow completed successfully");
+                }
+                Err(err) => {
+                    warn!(error = ?err, "Host shutdown workflow failed");
+                }
+            }
 
-        let mut state = self.state.lock().await;
-        state.in_progress = false;
+            let mut state = manager.state.lock().await;
+            state.in_progress = false;
+        });
 
-        outcome?;
-        info!("Host shutdown flow completed successfully");
+        info!("Host shutdown flow detached from request lifecycle");
         Ok(ShutdownResponse::started())
     }
 
