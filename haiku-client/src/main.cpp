@@ -8,7 +8,6 @@
 #include <Path.h>
 #include <ScrollView.h>
 #include <StringItem.h>
-#include <StringView.h>
 #include <TextControl.h>
 #include <Window.h>
 
@@ -140,7 +139,6 @@ public:
         : BWindow(BRect(80, 80, 760, 520), "Risky Proxmox", B_TITLED_WINDOW, B_AUTO_UPDATE_SIZE_LIMITS)
         , fServerUrl(new BTextControl("Server:", kDefaultServerUrl, nullptr))
         , fVmList(new BListView("vm-list", B_SINGLE_SELECTION_LIST))
-        , fStatus(new BStringView("status", "Ready."))
         , fSettingsButton(new BButton("Settings", new BMessage(kSettingsMessage)))
         , fRefreshButton(new BButton("Refresh", new BMessage(kRefreshMessage)))
         , fLaunchButton(new BButton("Launch Selected VM", new BMessage(kLaunchMessage)))
@@ -162,11 +160,13 @@ public:
                 .Add(fSettingsButton)
                 .Add(fRefreshButton)
                 .Add(fLaunchButton)
-                .Add(fShutdownButton)
                 .AddGlue()
             .End()
             .Add(new BScrollView("vm-scroll", fVmList, B_FRAME_EVENTS, false, true))
-            .Add(fStatus);
+            .AddGroup(B_HORIZONTAL, B_USE_DEFAULT_SPACING)
+                .AddGlue()
+                .Add(fShutdownButton)
+            .End();
 
         fServerUrl->Hide();
 
@@ -208,7 +208,13 @@ public:
 private:
     void SetStatus(const std::string& status)
     {
-        fStatus->SetText(status.c_str());
+        std::string title = "Risky Proxmox";
+        if (!status.empty()) {
+            title += " - ";
+            title += status;
+        }
+
+        SetTitle(title.c_str());
     }
 
     std::string ServerUrl() const
@@ -433,7 +439,6 @@ private:
 
     BTextControl* fServerUrl;
     BListView* fVmList;
-    BStringView* fStatus;
     BButton* fSettingsButton;
     BButton* fRefreshButton;
     BButton* fLaunchButton;
