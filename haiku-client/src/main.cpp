@@ -28,6 +28,7 @@ const char* kAppSignature = "application/x-vnd.risky-proxmox-haiku-client";
 
 const uint32 kRefreshMessage = 'refr';
 const uint32 kLaunchMessage = 'lnch';
+const uint32 kShutdownMessage = 'shdn';
 const uint32 kSettingsMessage = 'stng';
 const uint32 kServerUrlChangedMessage = 'svch';
 
@@ -143,6 +144,7 @@ public:
         , fSettingsButton(new BButton("Settings", new BMessage(kSettingsMessage)))
         , fRefreshButton(new BButton("Refresh", new BMessage(kRefreshMessage)))
         , fLaunchButton(new BButton("Launch Selected VM", new BMessage(kLaunchMessage)))
+        , fShutdownButton(new BButton("Shutdown Host", new BMessage(kShutdownMessage)))
         , fSettingsVisible(false)
     {
         fVmList->SetSelectionMessage(new BMessage(kLaunchMessage));
@@ -160,6 +162,7 @@ public:
                 .Add(fSettingsButton)
                 .Add(fRefreshButton)
                 .Add(fLaunchButton)
+                .Add(fShutdownButton)
                 .AddGlue()
             .End()
             .Add(new BScrollView("vm-scroll", fVmList, B_FRAME_EVENTS, false, true))
@@ -193,6 +196,9 @@ public:
                 return;
             }
             LaunchSelectedVm();
+            return;
+        case kShutdownMessage:
+            RequestHostShutdown();
             return;
         default:
             BWindow::MessageReceived(message);
@@ -343,6 +349,64 @@ private:
         RefreshVmList();
     }
 
+    void RequestHostShutdown(const std::string& action = "")
+    {
+        const std::string url = ServerUrl();
+        if (url.empty()) {
+            SetStatus("Enter a server URL first.");
+            return;
+        }
+
+        SaveServerUrl(url);
+
+        std::string payload = "{}";
+        if (!action.empty()) {
+            std::ostringstream actionPayload;
+            actionPayload << "{\"action\":\"" << action << "\"}";
+            payload = actionPayload.str();
+        } else if (!ConfirmHostShutdown()) {
+            SetStatus("Host shutdown cancelled.");
+            return;
+        }
+
+        SetStatus("Submitting host shutdown request...");
+        auto response = ApiRequest(url, "/api/host-shutdown", "POST", payload);
+
+        const std::string status = JsonValue(response, "status");
+        std::string message = JsonValue(response, "message");
+
+        if (status == "needs_action") {
+            const auto nextAction = PromptForConflictAction();
+            if (nextAction == "cancel") {
+                SetStatus("Host shutdown cancelled.");
+                return;
+            }
+            RequestHostShutdown(nextAction);
+            return;
+        }
+
+        if (message.empty()) {
+            message = "Host shutdown request submitted.";
+        }
+
+        SetStatus(message);
+    }
+
+    bool ConfirmHostShutdown()
+    {
+        BAlert* alert = new BAlert(
+            "shutdown",
+            "Shutdown host machine? This will stop running VMs first, then power off the Proxmox host.",
+            "Cancel",
+            "Shutdown Host",
+            nullptr,
+            B_WIDTH_FROM_LABEL,
+            B_WARNING_ALERT);
+
+        alert->SetShortcut(0, B_ESCAPE);
+        return alert->Go() == 1;
+    }
+
     std::string PromptForConflictAction()
     {
         BAlert* alert = new BAlert(
@@ -373,6 +437,7 @@ private:
     BButton* fSettingsButton;
     BButton* fRefreshButton;
     BButton* fLaunchButton;
+    BButton* fShutdownButton;
     bool fSettingsVisible;
     std::vector<VmRecord> fVms;
 };
