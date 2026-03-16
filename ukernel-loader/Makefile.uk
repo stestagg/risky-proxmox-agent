@@ -1,0 +1,4 @@
+$(eval $(call addlib_s,libukernel_loader,$(CONFIG_LIBUKERNEL_LOADER)))
+
+LIBUKERNEL_LOADER_SRCS-y += $(UK_PROJDIR)/src/main.c
+LIBUKERNEL_LOADER_CFLAGS-y += -Wall -Wextra
