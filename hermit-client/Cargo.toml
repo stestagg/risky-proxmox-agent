@@ -1,0 +1,19 @@
+[package]
+name = "rpa-hermit-client"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+log = "*"
+simple_logger = "*"
+ureq = { version = "2", default-features = false, features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+[target.'cfg(target_os = "hermit")'.dependencies]
+hermit = {
+    git = "https://github.com/hermit-os/hermit-rs.git",
+    tag = "hermit-0.13.0",
+    features = ["acpi", "dhcpv4", "pci", "pci-ids", "tcp", "rtl8139", "vga"],
+    default-features = false
+}

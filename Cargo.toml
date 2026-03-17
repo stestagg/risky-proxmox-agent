@@ -20,3 +20,4 @@ proxmox-dummy = { path = "crates/proxmox-dummy" }
 
 [workspace]
 members = ["crates/proxmox-dummy"]
+exclude = ["hermit-client"]
